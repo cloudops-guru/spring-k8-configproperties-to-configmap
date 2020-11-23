@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.xylem</groupId>
+    <artifactId>eks-owa-configmaps</artifactId>
+    <version>1.0.0</version>
+    <packaging>pom</packaging>
+
+    <properties>
+        <google.sortpom.version>2.2.1</google.sortpom.version>
+        <maven.build.timestamp.format>yyMMddHHmmss</maven.build.timestamp.format>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+    </properties>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>com.github.pturczyk</groupId>
+                <artifactId>ymlint-maven-plugin</artifactId>
+                <version>0.1.0</version>
+                <configuration>
+                    <yamlPaths>
+                        <yamlPath>configmaps</yamlPath>
+                    </yamlPaths>
+                    <failOnError>true</failOnError>
+                    <strictValidation>true</strictValidation>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <phase>validate</phase>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <profile>
+            <id>formatting</id>
+            <activation>
+                <activeByDefault>true</activeByDefault>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>com.google.code.sortpom</groupId>
+                        <artifactId>maven-sortpom-plugin</artifactId>
+                        <version>${google.sortpom.version}</version>
+                        <configuration>
+                            <predefinedSortOrder>custom_1</predefinedSortOrder>
+                            <lineSeparator>\r\n</lineSeparator>
+                            <encoding>${project.build.sourceEncoding}</encoding>
+                            <sortProperties>true</sortProperties>
+                            <keepBlankLines>true</keepBlankLines>
+                            <sortDependencies>scope</sortDependencies>
+                            <createBackupFile>false</createBackupFile>
+                            <expandEmptyElements>false</expandEmptyElements>
+                            <nrOfIndentSpace>4</nrOfIndentSpace>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <goals>
+                                    <goal>sort</goal>
+                                </goals>
+                                <phase>process-sources</phase>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
+</project>

@@ -1,0 +1,223 @@
+image:
+  name: docker-base.jfrog.io/orgname:k8-configmap-bitbucket
+  username: $DOCKER_USER
+  password: $DOCKER_PASS
+
+definitions:
+  steps:
+    - step: &copy_configs
+        #  copy the config server configs to local working directory
+        name: Copy Configs
+        image: atlassian/default-image:2
+        script:
+          - mkdir -p tmp/raw/cfgs
+          - declare -x CFG_REPO_LOCAL_PATH="tmp/raw/cfgs"
+          - declare -x CFG_MAP_VERSION_TAG="${CFG_VERSION_TAG}-${BITBUCKET_BUILD_NUMBER}"
+          - declare -x CFG_REPO_URL=git@bitbucket.org:${BITBUCKET_REPO_OWNER}/myproject-config-repo-k8.git
+          - ./pipe_copy_configs.sh ${CFG_REPO_LOCAL_PATH} ${CFG_REPO_URL} ${CFG_VERSION_TAG}
+          - echo  "${CFG_VERSION_TAG}" > CFG_VERSION_TAG.txt
+          - echo  "${CFG_MAP_VERSION_TAG}" > CFG_MAP_VERSION_TAG.txt
+          - echo  "${CFG_REPO_LOCAL_PATH}" > CFG_REPO_LOCAL_PATH.txt
+          - find ${CFG_REPO_LOCAL_PATH}
+        artifacts:
+          - CFG_VERSION_TAG.txt
+          - CFG_MAP_VERSION_TAG.txt
+          - CFG_REPO_LOCAL_PATH.txt
+          - tmp/raw/cfgs/**
+
+    - step: &migrate_configs
+        #  migrate the config server configs to config maps with the correct namespace, etc.
+        name: Migrate Configs
+        script:
+          - declare -x CFG_MAP_VERSION_TAG=$(cat CFG_MAP_VERSION_TAG.txt)
+          - declare -x CFG_REPO_LOCAL_PATH=$(cat CFG_REPO_LOCAL_PATH.txt)
+          - find ${CFG_REPO_LOCAL_PATH}
+          - ./pipe_migrate_configs.sh ${CFG_REPO_LOCAL_PATH} ${CFG_MAP_VERSION_TAG}
+        artifacts:
+          - CFG_VERSION_TAG.txt
+          - CFG_MAP_VERSION_TAG.txt
+          - configmaps/*/imported/*
+
+    - step: &validate
+        name: Validate
+        image: maven:3.6.1-jdk-8-slim
+        caches:
+          - maven
+        script:
+          - find .
+          - mvn -s settings.xml -B validate
+        artifacts:
+          - CFG_VERSION_TAG.txt
+          - CFG_MAP_VERSION_TAG.txt
+          - configmaps/*/imported/*
+
+    - step: &make_version
+        name: Create cfg map version tag
+        image: atlassian/default-image:2
+        script:
+          - declare -x CFG_MAP_VERSION_TAG=$(cat CFG_MAP_VERSION_TAG.txt)
+          - git add CFG_MAP_VERSION_TAG.txt configmaps
+          - git commit -m "Branch:${BITBUCKET_BRANCH}  Version:${BITBUCKET_BUILD_NUMBER} GIT Commit:${BITBUCKET_COMMIT} cfg ver:${CFG_VERSION_TAG} ${CFG_MAP_VERSION_TAG}"
+          - git tag -am "Tagging for release ${BITBUCKET_BUILD_NUMBER}" ${CFG_MAP_VERSION_TAG}
+          - git push origin ${CFG_MAP_VERSION_TAG}
+
+pipelines:
+  # merge to any branch other than the ones specified below
+  default:
+    - step: *validate
+
+  # upon any merge to these branches
+  branches:
+    master:
+      - step: *validate
+
+  tags:
+    'trigger/env/dev':
+      - step:
+          deployment: dev
+          name: Load Config Map DEV
+          script:
+            - aws eks --region $AWS_REGION update-kubeconfig --name $EKS_CLUSTER
+            - ./pipe_deploy_configs_env.sh ${BITBUCKET_DEPLOYMENT_ENVIRONMENT}
+
+    'trigger/service/dev/*':
+      - step:
+          deployment: dev
+          name: Load Config Map DEV Single Service
+          script:
+            - aws eks --region $AWS_REGION update-kubeconfig --name $EKS_CLUSTER
+            - declare -x SERVICE=`echo $BITBUCKET_TAG | cut -f4 -d'/'`
+            - ./pipe_deploy_configs_service.sh ${BITBUCKET_DEPLOYMENT_ENVIRONMENT} ${SERVICE}
+
+    'trigger/env/qa':
+      - step:
+          deployment: qa
+          name: Load Config Map QA
+          script:
+            - aws eks --region $AWS_REGION update-kubeconfig --name $EKS_CLUSTER
+            - ./pipe_deploy_configs_env.sh ${BITBUCKET_DEPLOYMENT_ENVIRONMENT}
+
+    'trigger/service/qa/*':
+      - step:
+          deployment: qa
+          name: Load Config Map QA Single Service
+          script:
+            - aws eks --region $AWS_REGION update-kubeconfig --name $EKS_CLUSTER
+            - declare -x SERVICE=`echo $BITBUCKET_TAG | cut -f4 -d'/'`
+            - ./pipe_deploy_configs_service.sh ${BITBUCKET_DEPLOYMENT_ENVIRONMENT} ${SERVICE}
+
+     
+
+    'trigger/env/prod':
+      - step:
+          deployment: prod
+          name: Load Config Map PROD
+          script:
+            - aws eks --region $AWS_REGION update-kubeconfig --name $EKS_CLUSTER
+            - ./pipe_deploy_configs_env.sh ${BITBUCKET_DEPLOYMENT_ENVIRONMENT}
+
+    'trigger/service/prod/*':
+      - step:
+          deployment: prod
+          name: Load Config Map PROD Single Service
+          script:
+            - aws eks --region $AWS_REGION update-kubeconfig --name $EKS_CLUSTER
+            - declare -x SERVICE=`echo $BITBUCKET_TAG | cut -f4 -d'/'`
+            - ./pipe_deploy_configs_service.sh ${BITBUCKET_DEPLOYMENT_ENVIRONMENT} ${SERVICE}
+
+  custom:
+    Migrate :
+      - variables:
+          - name: CFG_VERSION_TAG
+      - step: *copy_configs
+      - step: *migrate_configs
+      - step: *validate
+      - step: *make_version
+
+    Promote All Services on Environment:
+      - variables:
+          - name: CFG_MAP_VERSION_TAG
+          - name: ENV
+      - step:
+          name: Create Trigger Tag
+          image: atlassian/default-image:2
+          script:
+            - declare -x TRIGGER_TAG=trigger/env/${ENV}
+            - git fetch --all --tags --prune
+            - git fetch -p origin
+            - git push --delete origin ${TRIGGER_TAG} || true
+            - git checkout tags/$CFG_MAP_VERSION_TAG -b $CFG_MAP_VERSION_TAG
+            - git tag -d $(git tag -l)
+            - git tag -am "Tagging  ${ENV} ${SERVICE} ${CFG_MAP_VERSION_TAG} " ${TRIGGER_TAG}
+            - git push origin ${TRIGGER_TAG}
+
+    Promote Single Service on Environment:
+      - variables:
+          - name: CFG_MAP_VERSION_TAG
+          - name: ENV
+          - name: SERVICE
+      - step:
+          name: Create Trigger Tag
+          image: atlassian/default-image:2
+          script:
+            - declare -x TRIGGER_TAG=trigger/service/${ENV}/${SERVICE}
+            - git fetch --all --tags --prune
+            - git fetch -p origin
+            - git push --delete origin ${TRIGGER_TAG} || true
+            - git checkout tags/$CFG_MAP_VERSION_TAG -b $CFG_MAP_VERSION_TAG
+            - git tag -d $(git tag -l)
+            - git tag -am "Tagging  ${ENV} ${CFG_MAP_VERSION_TAG} ${SERVICE} " ${TRIGGER_TAG}
+            - git push origin ${TRIGGER_TAG}
+
+    #
+    # TEST TOOLING:
+    #   pipe to test the pipe_deploy_configs_service script directly
+    Test Load Config Map Dev:
+      - variables:
+          - name:  SERVICE
+      - step:
+          deployment: dev
+          name: Load Config Map Dev
+          script:
+            - aws eks --region $AWS_REGION update-kubeconfig --name $EKS_CLUSTER
+            - ./pipe_deploy_configs_service.sh ${BITBUCKET_DEPLOYMENT_ENVIRONMENT} ${SERVICE}
+
+    Test Load Config Map Qa:
+      - variables:
+          - name:  SERVICE
+      - step:
+          deployment: qa
+          name: Load Config Map QA
+          script:
+            - aws eks --region $AWS_REGION update-kubeconfig --name $EKS_CLUSTER
+            - ./pipe_deploy_configs_service.sh ${BITBUCKET_DEPLOYMENT_ENVIRONMENT} ${SERVICE}
+
+    Test Delete Pod Dev:
+      - variables:
+          - name:  SERVICE
+      - step:
+          deployment: dev
+          name: Delete pod on DEV
+          script:
+            - aws eks --region $AWS_REGION update-kubeconfig --name $EKS_CLUSTER
+            - kubectl get pod -n dev
+            - declare -x PODNAME=`kubectl get pod -n dev | grep ${SERVICE} | awk '{ print $1 }'`
+            - kubectl delete pod -n dev ${PODNAME}
+
+    Test Delete Pod Qa:
+      - variables:
+          - name:  SERVICE
+      - step:
+          deployment: qa
+          name: Delete pod on qa
+          script:
+            - aws eks --region $AWS_REGION update-kubeconfig --name $EKS_CLUSTER
+            - kubectl get pod -n qa
+            - declare -x PODNAME=`kubectl get pod -n qa | grep ${SERVICE} | awk '{ print $1 }'`
+            - kubectl delete pod -n qa ${PODNAME}
+
+
+
+    
+    
+  
